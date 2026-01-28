@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pkl
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data & models (JAMAIS dans Git)
+data/
+models/
+*.csv
+*.tsv
+
+# Environnement
+venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
