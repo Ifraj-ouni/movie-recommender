@@ -2,31 +2,27 @@ import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from surprise import Dataset, Reader, SVD
 
 
 # =============================
 # BUILD MODELS
 # =============================
 def build_models(movies, ratings):
-    # CONTENT-BASED
+    # -------- CONTENT-BASED --------
     tfidf = TfidfVectorizer(stop_words="english")
     tfidf_matrix = tfidf.fit_transform(movies["genres"])
+    content_similarity = cosine_similarity(tfidf_matrix)
 
-    similarity = cosine_similarity(tfidf_matrix)
+    # -------- COLLABORATIVE --------
+    user_item = ratings.pivot_table(
+        index="userId",
+        columns="movieId",
+        values="rating"
+    ).fillna(0)
 
-    # COLLABORATIVE
-    reader = Reader(rating_scale=(0.5, 5))
-    data = Dataset.load_from_df(
-        ratings[["userId", "movieId", "rating"]],
-        reader
-    )
+    user_similarity = cosine_similarity(user_item)
 
-    trainset = data.build_full_trainset()
-    svd = SVD()
-    svd.fit(trainset)
-
-    return similarity, svd
+    return content_similarity, user_similarity, user_item
 
 
 # =============================
@@ -37,29 +33,30 @@ def content_recommend(movie_title, movies, similarity, top_n=10):
         return pd.DataFrame()
 
     idx = movies[movies["title"] == movie_title].index[0]
-    sim_scores = list(enumerate(similarity[idx]))
-    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)[1:top_n+1]
+    scores = list(enumerate(similarity[idx]))
+    scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:top_n+1]
 
-    movie_indices = [i[0] for i in sim_scores]
+    movie_indices = [i[0] for i in scores]
     return movies.iloc[movie_indices]
 
 
 # =============================
 # COLLABORATIVE
 # =============================
-def collaborative_recommend(user_id, movies, ratings, svd, top_n=10):
-    watched = ratings[ratings["userId"] == user_id]["movieId"].tolist()
-    candidates = movies[~movies["movieId"].isin(watched)]
+def collaborative_recommend(user_id, movies, ratings, user_similarity, user_item, top_n=10):
+    if user_id not in user_item.index:
+        return pd.DataFrame()
 
-    preds = []
-    for _, row in candidates.iterrows():
-        est = svd.predict(user_id, row["movieId"]).est
-        preds.append((row["movieId"], est))
+    user_idx = list(user_item.index).index(user_id)
+    similar_users = user_similarity[user_idx].argsort()[::-1][1:11]
 
-    preds = sorted(preds, key=lambda x: x[1], reverse=True)[:top_n]
-    movie_ids = [p[0] for p in preds]
+    mean_ratings = user_item.iloc[similar_users].mean(axis=0)
 
-    return movies[movies["movieId"].isin(movie_ids)]
+    watched = ratings[ratings["userId"] == user_id]["movieId"]
+    recommendations = mean_ratings.drop(watched, errors="ignore")
+
+    top_movies = recommendations.sort_values(ascending=False).head(top_n).index
+    return movies[movies["movieId"].isin(top_movies)]
 
 
 # =============================
@@ -70,18 +67,20 @@ def hybrid_recommend(
     movie_title,
     movies,
     ratings,
-    similarity,
-    svd,
+    content_similarity,
+    user_similarity,
+    user_item,
     top_n=10
 ):
-    content_df = content_recommend(movie_title, movies, similarity, top_n * 2)
-    collab_df = collaborative_recommend(user_id, movies, ratings, svd, top_n * 2)
-
-    if collab_df.empty:
-        return content_df.head(top_n)
+    content_df = content_recommend(movie_title, movies, content_similarity, top_n * 2)
+    collab_df = collaborative_recommend(
+        user_id, movies, ratings, user_similarity, user_item, top_n * 2
+    )
 
     if content_df.empty:
         return collab_df.head(top_n)
+    if collab_df.empty:
+        return content_df.head(top_n)
 
-    hybrid_df = pd.concat([content_df, collab_df]).drop_duplicates("movieId")
-    return hybrid_df.head(top_n)
+    hybrid = pd.concat([content_df, collab_df]).drop_duplicates("movieId")
+    return hybrid.head(top_n)
